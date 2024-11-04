@@ -41,6 +41,39 @@ class TestFuseKernel1(TestCase):
     def test_correctness_cuda(self):
         self._test_correctness("cuda")
 
+    def _test_gradients(self, device):
+        samples = self.sample_inputs(device, requires_grad=True)
+        for args in samples:
+            diff_tensors = [a for a in args if isinstance(a, torch.Tensor) and a.requires_grad]
+            out = cola_kernels.ops.fuse_kernel_1(*args)
+            grad_out = torch.randn_like(out)
+            result = torch.autograd.grad(out, diff_tensors, grad_out)
+
+            out = reference_fuse_kernel_1(*args)
+            expected = torch.autograd.grad(out, diff_tensors, grad_out)
+
+            torch.testing.assert_close(result, expected)
+
+    def test_gradients_cpu(self):
+        self._test_gradients("cpu")
+
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    def test_gradients_cuda(self):
+        self._test_gradients("cuda")
+
+    def _opcheck(self, device):
+        # Use opcheck to check for incorrect usage of operator registration APIs
+        samples = self.sample_inputs(device, requires_grad=True)
+        samples.extend(self.sample_inputs(device, requires_grad=False))
+        for args in samples:
+            opcheck(torch.ops.cola_kernels.fuse_kernel_1.default, args)
+
+    def test_opcheck_cpu(self):
+        self._opcheck("cpu")
+
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    def test_opcheck_cuda(self):
+        self._opcheck("cuda")
 
 if __name__ == "__main__":
     unittest.main()
