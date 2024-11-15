@@ -1,18 +1,18 @@
 import torch
 from torch import Tensor
 
-__all__ = ["fuse_kernel_1"]
+__all__ = ["fuse_kernel_1", "fuse_kernel_2"]
 
 
 def fuse_kernel_1(a: Tensor, b: Tensor, c: Tensor) -> Tensor:
     """Performs a * b + c in an efficient fused kernel"""
     return torch.ops.cola_kernels.fuse_kernel_1.default(a, b, c)
 
+def fuse_kernel_2(a: Tensor) -> Tensor:
+    """Performs inverse of A efficiently"""
+    return torch.ops.cola_kernels.fuse_kernel_2.default(a)
 
-# Registers a FakeTensor kernel (aka "meta kernel", "abstract impl")
-# that describes what the properties of the output Tensor are given
-# the properties of the input Tensor. The FakeTensor kernel is necessary
-# for the op to work performantly with torch.compile.
+
 @torch.library.register_fake("cola_kernels::fuse_kernel_1")
 def _(a, b, c):
     torch._check(a.shape == b.shape)
@@ -46,8 +46,12 @@ def _setup_context(ctx, inputs, output):
     ctx.save_for_backward(saved_a, saved_b)
 
 
-# This adds training support for the operator. You must provide us
-# the backward formula for the operator and a `setup_context` function
-# to save values to be used in the backward.
 torch.library.register_autograd(
     "cola_kernels::fuse_kernel_1", _backward, setup_context=_setup_context)
+
+
+
+@torch.library.register_fake("cola_kernels::fuse_kernel_2")
+def _(a):
+    torch._check(a.dtype == torch.float)
+    return torch.empty_like(a)
