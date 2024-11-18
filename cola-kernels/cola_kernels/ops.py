@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-__all__ = ["fuse_kernel_1", "fuse_kernel_2"]
+__all__ = ["fuse_kernel_1", "fuse_kernel_2", "fuse_kernel_3"]
 
 
 def fuse_kernel_1(a: Tensor, b: Tensor, c: Tensor) -> Tensor:
@@ -12,6 +12,9 @@ def fuse_kernel_2(a: Tensor) -> Tensor:
     """Performs inverse of A efficiently"""
     return torch.ops.cola_kernels.fuse_kernel_2.default(a)
 
+def fuse_kernel_3(a: Tensor) -> Tensor:
+    """Performs SVD of A efficiently"""
+    return torch.ops.cola_kernels.fuse_kernel_3.default(a)
 
 @torch.library.register_fake("cola_kernels::fuse_kernel_1")
 def _(a, b, c):
@@ -55,3 +58,9 @@ torch.library.register_autograd(
 def _(a):
     torch._check(a.dtype == torch.float)
     return torch.empty_like(a)
+
+
+@torch.library.register_fake("cola_kernels::fuse_kernel_3")
+def _(a):
+    torch._check(a.dtype == torch.float)
+    return torch.empty_like(a), torch.empty_like(a), torch.empty_like(a)
