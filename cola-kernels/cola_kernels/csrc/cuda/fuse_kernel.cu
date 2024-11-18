@@ -10,6 +10,12 @@
 #include <vector>
 #include <iostream>
 
+
+#include <time.h>
+#include <math.h>
+#include <complex.h>
+#include <cuComplex.h>
+
 namespace cg = cooperative_groups;
 
 namespace cola_kernels {
@@ -368,11 +374,243 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fuse_kernel_3_cuda(at::Tensor& a)
     return std::make_tuple(aat, s, ata);
 }
 
+typedef std::complex<float> cfloat;
+#define index(i, j, N) ((i) * (N)) + (j)
+
+__global__ void sum(cuFloatComplex *array, cuFloatComplex *out, int size)
+{
+    __shared__ cuFloatComplex sharedMem[1024]; // Shared memory for block reduction
+
+    int tid = threadIdx.x;
+    int globalIdx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    sharedMem[tid] = (globalIdx < size) ? array[globalIdx] : make_cuFloatComplex(0.0f, 0.0f);
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            sharedMem[tid] = cuCaddf(sharedMem[tid], sharedMem[tid + stride]);
+        }
+        __syncthreads();
+    }
+    if (tid == 0)
+    {
+        out[blockIdx.x] = sharedMem[0];
+    }
+}
+
+__global__ void sum_of_squares(cuFloatComplex *array, cuFloatComplex *out, int size)
+{
+    __shared__ cuFloatComplex sharedMem[1024]; // Shared memory for block reduction
+
+    int tid = threadIdx.x;
+    int globalIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    sharedMem[tid] = (globalIdx < size) ? cuCmulf(array[globalIdx], array[globalIdx]) : make_cuFloatComplex(0.0f, 0.0f);
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            sharedMem[tid] = cuCaddf(sharedMem[tid], sharedMem[tid + stride]);
+        }
+        __syncthreads();
+    }
+    if (tid == 0)
+    {
+        out[blockIdx.x] = sharedMem[0];
+    }
+}
+
+__global__ void norm_cal(cuFloatComplex *v, cuFloatComplex norm, int N)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < N)
+    {
+        v[tid] = cuCdivf(v[tid], norm);
+    }
+}
+
+__global__ void update_arr(cuFloatComplex *Q, cuFloatComplex *V, int N, int M, int i)
+{
+    int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row_idx < N)
+    {
+        Q[index(row_idx, i, M)] = V[row_idx];
+    }
+}
+
+__global__ void matrix_vector_mul(float *A, cuFloatComplex *B, cuFloatComplex *C, int N, int M, int i)
+{
+    int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row_idx < N)
+    {
+        cuFloatComplex dot_product = make_cuFloatComplex(0.0f, 0.0f);
+        for (int col_idx = 0; col_idx < N; col_idx++)
+        {
+            cuFloatComplex a = make_cuFloatComplex(A[index(row_idx, col_idx, N)], 0.0f);
+            dot_product = cuCaddf(dot_product, cuCmulf(a, B[index(col_idx, i, M)]));
+        }
+        C[row_idx] = dot_product;
+    }
+}
+
+__global__ void update_new_vector(cuFloatComplex A, cuFloatComplex *B, cuFloatComplex *C, int N, int M, int i)
+{
+    int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row_idx < N)
+    {
+        C[row_idx] = cuCsubf(C[row_idx], cuCmulf(A, B[index(row_idx, i, M)]));
+    }
+}
+
+__global__ void angle_cal(cuFloatComplex *Q, cuFloatComplex *V, cuFloatComplex *ang, int N, int M, int i)
+{
+    int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row_idx < N)
+    {
+        ang[row_idx] = cuCmulf(cuConjf(Q[index(row_idx, i, M)]), V[row_idx]);
+    }
+}
+
+
+
+std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor& a)
+{
+
+    TORCH_CHECK(a.dtype() == at::kFloat);
+    TORCH_INTERNAL_ASSERT(a.device().type() == at::DeviceType::CUDA);
+    at::Tensor a_contig = a.contiguous();
+    float* A_d = a_contig.data_ptr<float>();
+
+    int max_iters = 20;
+    time_t start_t, end_t;
+    double diff_t;
+    int idx = 0;
+    cfloat norm, angle;
+    srand(21);
+    int random_number = rand();
+    int N = a.sizes()[0];
+    int blocks = (N + 1023) / 1024;
+
+    // cpu data
+    cfloat *new_vector, *new_vector_r, *h_vec, *ang, *H, *Q;
+    new_vector = (cfloat *)calloc(N, sizeof(cfloat));
+    new_vector_r = (cfloat *)calloc(blocks, sizeof(cfloat));
+    H = (cfloat *)calloc((max_iters + 1) * max_iters, sizeof(cfloat));
+    Q = (cfloat *)calloc(N * (max_iters + 1), sizeof(cfloat));
+    h_vec = (cfloat *)calloc((max_iters + 1), sizeof(cfloat));
+    ang = (cfloat *)calloc(N, sizeof(cfloat));
+
+    // cuda data
+    cuFloatComplex norm_d, angle_d;
+    cuFloatComplex *new_vector_d, *new_vector_d_r, *H_d, *Q_d, *h_vec_d, *ang_d;
+    cudaMalloc((void **)&new_vector_d, N * sizeof(cuFloatComplex));
+    cudaMalloc((void **)&new_vector_d_r, blocks * sizeof(cuFloatComplex));
+    cudaMalloc((void **)&H_d, (max_iters + 1) * max_iters * sizeof(cuFloatComplex));
+    cudaMalloc((void **)&Q_d, N * (max_iters + 1) * sizeof(cuFloatComplex));
+    cudaMalloc((void **)&h_vec_d, (max_iters + 1) * sizeof(cuFloatComplex));
+    cudaMalloc((void **)&ang_d, N * sizeof(cuFloatComplex));
+
+    for (int i = 0; i < N; i++)
+    {
+        // new_vector[i] = cfloat(float(i), 0.0f);
+        new_vector[i] = ((float)rand() / RAND_MAX);
+    }
+
+    time(&start_t);
+
+    // cuda mem copy
+
+    cudaMemcpy(new_vector_d, new_vector, N * sizeof(cfloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(new_vector_d_r, new_vector_r, N * sizeof(cfloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(H_d, H, max_iters * (max_iters + 1) * sizeof(cfloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(Q_d, Q, N * (max_iters + 1) * sizeof(cfloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(ang_d, ang, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(h_vec_d, h_vec, (max_iters + 1) * sizeof(float), cudaMemcpyHostToDevice);
+
+    // norm calcuations
+    sum_of_squares<<<blocks, 1024>>>(new_vector_d, new_vector_d_r, N);
+    cudaMemcpy(new_vector_r, new_vector_d_r, blocks * sizeof(cuFloatComplex), cudaMemcpyDeviceToHost);
+    norm = 0;
+    for (int i = 0; i < blocks; i++)
+    {
+        norm = norm + new_vector_r[i];
+    }
+    norm = sqrt(norm);
+    norm_d = make_cuFloatComplex(norm.real(), norm.imag());
+    // std::cout << "norm(" << norm.real() << ", " << norm.imag() << "i)" << std::endl;
+    norm_cal<<<(N + 1023) / 1024, 1024>>>(new_vector_d, norm_d, N);
+
+    // update Q
+    update_arr<<<(N + 1023) / 1024, 1024>>>(Q_d, new_vector_d, N, (max_iters + 1), 0);
+
+    // iterations
+    while (idx < max_iters)
+    {
+        matrix_vector_mul<<<blocks, 1024>>>(A_d, Q_d, new_vector_d, N, (max_iters + 1), idx);
+        cudaMemset(h_vec_d, 0, (max_iters + 1) * sizeof(cuFloatComplex));
+        for (int j = 0; j < idx + 1; j++)
+        {
+            cudaMemset(ang_d, 0, N * sizeof(cuFloatComplex));
+            cudaMemset(new_vector_d_r, 0, blocks * sizeof(cuFloatComplex));
+            memset(new_vector_r, 0, blocks * sizeof(cfloat));
+            angle_cal<<<blocks, 1024>>>(Q_d, new_vector_d, ang_d, N, (max_iters + 1), j);
+            sum<<<blocks, 1024>>>(ang_d, new_vector_d_r, N);
+            cudaMemcpy(new_vector_r, new_vector_d_r, blocks * sizeof(cuFloatComplex), cudaMemcpyDeviceToHost);
+            angle = 0;
+            for (int i = 0; i < blocks; i++)
+            {
+                angle = angle + new_vector_r[i];
+            }
+            angle_d = make_cuFloatComplex(angle.real(), angle.imag());
+            // std::cout << "angle(" << angle.real() << ", " << angle.imag() << "i)" << std::endl;
+            cudaMemcpy(&h_vec_d[j], &angle_d, sizeof(cuFloatComplex), cudaMemcpyHostToDevice);
+            update_new_vector<<<blocks, 1024>>>(angle_d, Q_d, new_vector_d, N, (max_iters + 1), j);
+        }
+        cudaMemset(new_vector_d_r, 0, blocks * sizeof(cuFloatComplex));
+        memset(new_vector_r, 0, blocks * sizeof(cfloat));
+        sum_of_squares<<<blocks, 1024>>>(new_vector_d, new_vector_d_r, N);
+        cudaMemcpy(new_vector_r, new_vector_d_r, blocks * sizeof(cuFloatComplex), cudaMemcpyDeviceToHost);
+        norm = 0;
+        for (int i = 0; i < blocks; i++)
+        {
+            norm = norm + new_vector_r[i];
+        }
+        norm = sqrt(norm);
+        norm_d = make_cuFloatComplex(norm.real(), norm.imag());
+        // std::cout << "norm(" << norm.real() << ", " << norm.imag() << "i)" << std::endl;
+        if (std::abs(norm.real()) < 0.0000001 / 2.0)
+        {
+            norm.real(0.0000001 / 2.0);
+            norm.imag(0.0f);
+        }
+        norm_cal<<<(N + 1023) / 1024, 1024>>>(new_vector_d, norm_d, N);
+        cudaMemcpy(&h_vec_d[idx + 1], &norm_d, sizeof(cuFloatComplex), cudaMemcpyHostToDevice);
+        update_arr<<<((max_iters + 1) + 1023) / 1024, 1024>>>(H_d, h_vec_d, (max_iters + 1), max_iters, idx);
+        update_arr<<<(N + 1023) / 1024, 1024>>>(Q_d, new_vector_d, N, (max_iters + 1), (idx + 1));
+        idx += 1;
+    }
+
+    // cudaMemcpy(H, H_d, (max_iters + 1) * max_iters * sizeof(cfloat), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(Q, Q_d, N * (max_iters + 1) * sizeof(cfloat), cudaMemcpyDeviceToHost);
+    torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kComplexFloat).cuda();
+    torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kComplexFloat).cuda();
+
+    time(&end_t);
+    diff_t = difftime(end_t, start_t);
+    printf("Elapsed wall-clock time: %f seconds\n", diff_t);
+    return std::make_tuple(rH, rQ);
+}
 
 TORCH_LIBRARY_IMPL(cola_kernels, CUDA, m) {
   m.impl("fuse_kernel_1", &fuse_kernel_1_cuda);
   m.impl("fuse_kernel_2", &fuse_kernel_2_cuda);
   m.impl("fuse_kernel_3", &fuse_kernel_3_cuda);
+  m.impl("fuse_kernel_4", &fuse_kernel_4_cuda);
 }
 
 }
