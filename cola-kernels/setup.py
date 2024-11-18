@@ -31,6 +31,7 @@ def get_extensions():
         ],
         "nvcc": [
             "-O3" if not debug_mode else "-O0",
+            "--extended-lambda",
         ],
     }
     if debug_mode:
@@ -54,6 +55,7 @@ def get_extensions():
             sources,
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
+            libraries=["cusolver", "cublas"],
         )
     ]
 
