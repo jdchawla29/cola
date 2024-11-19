@@ -508,7 +508,6 @@ namespace cola_kernels
         float *A_d = a_contig.data_ptr<float>();
 
         int max_iters = 100;
-        time_t start_t, end_t;
         double diff_t;
         int idx = 0;
         float norm, angle;
@@ -535,12 +534,8 @@ namespace cola_kernels
 
         for (int i = 0; i < N; i++)
         {
-            // new_vector[i] = float(float(i), 0.0f);
             new_vector[i] = ((float)rand() / RAND_MAX);
         }
-
-        time(&start_t);
-
         // cuda mem copy and set
         cudaMemcpy(new_vector_d, new_vector, N * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemset(H_d, 0, max_iters * (max_iters + 1) * sizeof(float));
@@ -606,9 +601,6 @@ namespace cola_kernels
         torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kFloat).cuda();
         torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kFloat).cuda();
 
-        time(&end_t);
-        diff_t = difftime(end_t, start_t);
-        printf("Elapsed wall-clock time: %f seconds\n", diff_t);
         return std::make_tuple(rH, rQ);
     }
 
