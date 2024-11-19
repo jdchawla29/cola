@@ -506,7 +506,7 @@ namespace cola_kernels
         }
     }
 
-    std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor &a)
+    std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor &a, int64_t max_iters=100)
     {
 
         TORCH_CHECK(a.dtype() == at::kFloat);
@@ -514,7 +514,7 @@ namespace cola_kernels
         at::Tensor a_contig = a.contiguous();
         float *A_d = a_contig.data_ptr<float>();
 
-        int max_iters = 100;
+        // int max_iters = 100;
         double diff_t;
         int idx = 0;
         float norm, angle;
@@ -765,13 +765,12 @@ __global__ void compute_relative_error_kernel(
 
     at::Tensor fuse_kernel_5_cuda(
         at::Tensor &mat,      // Input matrix (host)
-        at::Tensor &diag          // Output diagonal (host)
-        // int n,                    // Matrix dimension
-        // int bs = 100,            // Batch size
-        // float tol = 3e-2f,       // Tolerance
-        // int max_iters = 10000,   // Maximum iterations
-        // int k = 0,               // Diagonal offset
-        // bool use_rademacher = false  // Use rademacher instead of normal distribution
+        at::Tensor &diag,          // Output diagonal (host)
+        int64_t bs = 100,            // Batch size
+        double tol = 3e-2f,       // Tolerance
+        int64_t max_iters = 10000,   // Maximum iterations
+        int64_t k = 0,               // Diagonal offset
+        bool use_rademacher = false  // Use rademacher instead of normal distribution
     ) {
 
         TORCH_CHECK(mat.dtype() == at::kFloat);
@@ -784,11 +783,6 @@ __global__ void compute_relative_error_kernel(
         at::Tensor diag_contig = diag.contiguous();
 
         int n = mat_contig.size(0); // Matrix dimension
-        int bs = 100;            // Batch size
-        float tol = 3e-2f;       // Tolerance
-        int max_iters = 10000;   // Maximum iterations
-        int k = 0;               // Diagonal offset
-        bool use_rademacher = false;  // Use rademacher instead of normal distribution
 
         float* matrix = mat_contig.data_ptr<float>();
         float* diagonal = diag_contig.data_ptr<float>();

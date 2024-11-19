@@ -53,7 +53,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fuse_kernel_3_cpu(at::Tensor& a) 
   return std::make_tuple(result, result, result);
 }
 
-std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cpu(at::Tensor& a) {
+std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cpu(at::Tensor& a, int64_t max_iters) {
   TORCH_CHECK(a.dtype() == at::kFloat);
   TORCH_INTERNAL_ASSERT(a.device().type() == at::DeviceType::CPU);
   at::Tensor a_contig = a.contiguous();
@@ -67,7 +67,15 @@ std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cpu(at::Tensor& a) {
   return std::make_tuple(result, result);
 }
 
-at::Tensor fuse_kernel_5_cpu(at::Tensor& a, at::Tensor& b) {
+at::Tensor fuse_kernel_5_cpu(
+  at::Tensor& a,
+  at::Tensor& b,
+  int64_t batch_size,
+  double tolerance,
+  int64_t max_iterations,
+  int64_t diagonal_offset,
+  bool use_rademacher
+) {
   TORCH_CHECK(a.dtype() == at::kFloat);
   TORCH_INTERNAL_ASSERT(a.device().type() == at::DeviceType::CPU);
   at::Tensor a_contig = a.contiguous();
@@ -88,16 +96,29 @@ TORCH_LIBRARY(cola_kernels, m) {
   m.def("fuse_kernel_1(Tensor a, Tensor b, Tensor c) -> Tensor");
   m.def("fuse_kernel_2(Tensor a) -> Tensor");
   m.def("fuse_kernel_3(Tensor a) -> (Tensor, Tensor, Tensor)");
-  m.def("fuse_kernel_4(Tensor a) -> (Tensor, Tensor)");
-  m.def("fuse_kernel_5(Tensor a, Tensor b) -> Tensor");
+  m.def("fuse_kernel_4(Tensor a, int max_iters) -> (Tensor, Tensor)");
+  m.def("fuse_kernel_5(Tensor a, Tensor b, int batch_size, float tolerance, int max_iterations, int diagonal_offset, bool use_rademacher) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(cola_kernels, CPU, m) {
   m.impl("fuse_kernel_1", &fuse_kernel_1_cpu);
   m.impl("fuse_kernel_2", &fuse_kernel_2_cpu);
   m.impl("fuse_kernel_3", &fuse_kernel_3_cpu);
-  m.impl("fuse_kernel_4", &fuse_kernel_4_cpu);
-  m.impl("fuse_kernel_5", &fuse_kernel_5_cpu);
+  m.impl(TORCH_SELECTIVE_NAME("fuse_kernel_4"), [](
+        at::Tensor& a, 
+        int64_t max_iters) {
+            return fuse_kernel_4_cpu(a, max_iters);
+    });
+   m.impl(TORCH_SELECTIVE_NAME("fuse_kernel_5"), [](
+        at::Tensor& mat, 
+        at::Tensor& diag,
+        int64_t batch_size,
+        double tolerance,
+        int64_t max_iterations,
+        int64_t diagonal_offset,
+        bool use_rademacher) {
+            return fuse_kernel_5_cpu(mat, diag, batch_size, tolerance, max_iterations, diagonal_offset, use_rademacher);
+    });
 }
 
 
