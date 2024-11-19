@@ -13,6 +13,13 @@
 #include <time.h>
 #include <math.h>
 
+
+#include <curand_kernel.h>
+#include <cmath>
+#include <stdexcept>
+#include <cstdio>
+#include <iomanip>
+
 namespace cg = cooperative_groups;
 
 namespace cola_kernels
@@ -604,12 +611,314 @@ namespace cola_kernels
         return std::make_tuple(rH, rQ);
     }
 
+    // Error checking macro for CUDA calls
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            cudaDeviceReset(); \
+            throw std::runtime_error("CUDA error"); \
+        } \
+    } while (0)
+
+// Error checking macro for cuBLAS calls
+#define CUBLAS_CHECK(call) \
+    do { \
+        cublasStatus_t status = call; \
+        if (status != CUBLAS_STATUS_SUCCESS) { \
+            fprintf(stderr, "cuBLAS error at %s:%d\n", __FILE__, __LINE__); \
+            cudaDeviceReset(); \
+            throw std::runtime_error("cuBLAS error"); \
+        } \
+    } while (0)
+
+// Constants for CUDA kernel configuration
+constexpr int BLOCK_SIZE = 256;     // Number of threads per block
+constexpr int MAX_BLOCKS = 65535;   // Maximum number of blocks
+
+// Initialize CUDA random number generator states
+__global__ void setup_curand_kernel(curandState *state) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    curand_init(clock64(), idx, 0, &state[idx]);
+}
+
+// Generate random vectors for Hutchinson estimation
+__global__ void generate_random_vector(curandState *state, float *z, int n, int bs, bool is_rademacher) {
+    // Each thread gets its own random state in shared memory
+    __shared__ curandState localState[BLOCK_SIZE];
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Copy state to shared memory for faster access
+    localState[threadIdx.x] = state[tid];
+    
+    // Generate random values for the entire matrix
+    int total_elements = n * bs;
+    for (int i = tid; i < total_elements; i += gridDim.x * blockDim.x) {
+        float rand_val = curand_normal(&localState[threadIdx.x]);
+        // Either Rademacher (+1/-1) or normal distribution
+        z[i] = is_rademacher ? ((rand_val >= 0.0f) ? 1.0f : -1.0f) : rand_val;
+    }
+    
+    // Save state back to global memory
+    state[tid] = localState[threadIdx.x];
+}
+
+__global__ void compute_diagonal_estimate(
+    const float* __restrict__ Az,     // Matrix-vector product Az
+    const float* __restrict__ z,      // Random vector z
+    float* __restrict__ diag_sum,     // Running sum of diagonal estimates
+    float* __restrict__ diag_sumsq,   // Running sum of squares for variance estimation
+    int n,                           // Matrix dimension
+    int bs,                          // Batch size for random vectors
+    int k,                           // Diagonal offset (0 for main diagonal)
+    int iter                         // Current iteration number
+) {
+    // Shared memory for temporary storage of sums and squared sums
+    __shared__ float shared_sum[BLOCK_SIZE];
+    __shared__ float shared_sumsq[BLOCK_SIZE];
+    
+    // Calculate thread ID and grid stride
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    
+    // Process diagonal elements in strided fashion
+    for (int i = tid; i < n - abs(k); i += stride) {
+        // Initialize accumulators for this diagonal element
+        shared_sum[threadIdx.x] = 0.0f;
+        shared_sumsq[threadIdx.x] = 0.0f;
+        
+        // Process batch of random vectors
+        #pragma unroll 4
+        for (int b = 0; b < bs; b++) {
+            int idx = i + (k >= 0 ? k : 0);  // Adjust index for off-diagonal elements
+            float est = Az[i + b * n] * z[idx + b * n];  // Compute estimate for this batch
+            shared_sum[threadIdx.x] += est;              // Accumulate sum
+            shared_sumsq[threadIdx.x] += est * est;      // Accumulate sum of squares
+        }
+        
+        // Normalize by batch size
+        shared_sum[threadIdx.x] /= bs;
+        shared_sumsq[threadIdx.x] /= bs;
+        
+        __syncthreads();
+        
+        // Update running statistics
+        if (iter == 0) {
+            // First iteration: just store the values
+            diag_sum[i] = shared_sum[threadIdx.x];
+            diag_sumsq[i] = shared_sumsq[threadIdx.x];
+        } else {
+            // Subsequent iterations: update mean and sum of squares
+            float old_mean = diag_sum[i];
+            float delta = shared_sum[threadIdx.x] - old_mean;
+            diag_sum[i] += delta / (iter + 1);                    // Update mean
+            diag_sumsq[i] += delta * (shared_sum[threadIdx.x] - diag_sum[i]); // Update sum of squares
+        }
+    }
+}
+
+__global__ void compute_relative_error_kernel(
+    const float* diag_sum,      // Running sum of diagonal estimates
+    const float* diag_sumsq,    // Running sum of squares for variance estimation
+    float* max_error,           // Output: maximum relative error across all elements
+    int n,                      // Number of diagonal elements
+    int total_iters            // Total number of iterations completed
+) {
+    // Shared memory for block-wise reduction of maximum error
+    __shared__ float shared_max_error[BLOCK_SIZE];
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Initialize local maximum error for this thread
+    float local_max_error = 0.0f;
+    
+    // Process elements with grid-stride loop
+    for (int i = tid; i < n; i += blockDim.x * gridDim.x) {
+        float mean = diag_sum[i];
+        float variance = diag_sumsq[i] / (total_iters - 1);
+        float stderr = sqrtf(variance / total_iters);
+        // Relative error with minimum denominator of 0.1 to avoid division by zero
+        float rel_error = stderr / fmaxf(fabsf(mean), 0.1f);
+        local_max_error = fmaxf(local_max_error, rel_error);
+    }
+    
+    // Store local maximum in shared memory
+    shared_max_error[threadIdx.x] = local_max_error;
+    __syncthreads();
+    
+    // Parallel reduction to find maximum error within the block
+    for (int s = blockDim.x/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            shared_max_error[threadIdx.x] = fmaxf(
+                shared_max_error[threadIdx.x],
+                shared_max_error[threadIdx.x + s]
+            );
+        }
+        __syncthreads();
+    }
+    
+    // First thread in block updates global maximum using atomic operation
+    if (threadIdx.x == 0) {
+        atomicMax((int*)max_error, __float_as_int(shared_max_error[0]));
+    }
+}
+
+    at::Tensor fuse_kernel_5_cuda(
+        at::Tensor &mat,      // Input matrix (host)
+        at::Tensor &diag          // Output diagonal (host)
+        // int n,                    // Matrix dimension
+        // int bs = 100,            // Batch size
+        // float tol = 3e-2f,       // Tolerance
+        // int max_iters = 10000,   // Maximum iterations
+        // int k = 0,               // Diagonal offset
+        // bool use_rademacher = false  // Use rademacher instead of normal distribution
+    ) {
+
+        TORCH_CHECK(mat.dtype() == at::kFloat);
+        TORCH_INTERNAL_ASSERT(mat.device().type() == at::DeviceType::CUDA);
+        TORCH_CHECK(diag.dtype() == at::kFloat);
+        TORCH_INTERNAL_ASSERT(diag.device().type() == at::DeviceType::CUDA);
+
+
+        at::Tensor mat_contig = mat.contiguous();
+        at::Tensor diag_contig = diag.contiguous();
+
+        int n = mat_contig.size(0); // Matrix dimension
+        int bs = 100;            // Batch size
+        float tol = 3e-2f;       // Tolerance
+        int max_iters = 10000;   // Maximum iterations
+        int k = 0;               // Diagonal offset
+        bool use_rademacher = false;  // Use rademacher instead of normal distribution
+
+        float* matrix = mat_contig.data_ptr<float>();
+        float* diagonal = diag_contig.data_ptr<float>();
+
+
+    // Create CUDA stream for asynchronous operations
+        cudaStream_t stream;
+        CUDA_CHECK(cudaStreamCreate(&stream));
+        
+        // Initialize cuBLAS handle and set stream
+        cublasHandle_t handle;
+        CUBLAS_CHECK(cublasCreate(&handle));
+        CUBLAS_CHECK(cublasSetStream(handle, stream));
+        
+        // Custom deleter for CUDA memory management
+        struct CudaDeleter {
+            void operator()(void* p) { cudaFree(p); }
+        };
+        printf("CUDAstream created\n");
+        // Smart pointers for CUDA memory management
+        std::unique_ptr<float, CudaDeleter> d_matrix;      // Device matrix
+        std::unique_ptr<float, CudaDeleter> d_z;           // Random vectors
+        std::unique_ptr<float, CudaDeleter> d_Az;          // Matrix-vector products
+        std::unique_ptr<float, CudaDeleter> d_diag_sum;    // Running sum of estimates
+        std::unique_ptr<float, CudaDeleter> d_diag_sumsq;  // Running sum of squares
+        std::unique_ptr<curandState, CudaDeleter> d_rand_state;  // RNG states
+        
+        float *ptr;
+        
+        // Allocate device memory
+        CUDA_CHECK(cudaMalloc(&ptr, n * n * sizeof(float)));
+        d_matrix.reset(ptr);
+        CUDA_CHECK(cudaMalloc(&ptr, n * bs * sizeof(float)));
+        d_z.reset(ptr);
+        CUDA_CHECK(cudaMalloc(&ptr, n * bs * sizeof(float)));
+        d_Az.reset(ptr);
+        CUDA_CHECK(cudaMalloc(&ptr, (n - abs(k)) * sizeof(float)));
+        d_diag_sum.reset(ptr);
+        CUDA_CHECK(cudaMalloc(&ptr, (n - abs(k)) * sizeof(float)));
+        d_diag_sumsq.reset(ptr);
+        
+
+        // Allocate RNG states
+        curandState *rand_ptr;
+        CUDA_CHECK(cudaMalloc(&rand_ptr, BLOCK_SIZE * sizeof(curandState)));
+        d_rand_state.reset(rand_ptr);
+        
+        // Copy matrix to device and initialize accumulators
+        // CUDA_CHECK(cudaMemcpyAsync(d_matrix.get(), matrix, n * n * sizeof(float),
+        //                         cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_matrix.get(), matrix, n * n * sizeof(float),
+                                cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemsetAsync(d_diag_sum.get(), 0, (n - abs(k)) * sizeof(float), stream));
+        CUDA_CHECK(cudaMemsetAsync(d_diag_sumsq.get(), 0, (n - abs(k)) * sizeof(float), stream));
+        
+        // Configure kernel grid
+        int num_blocks = std::min((n + BLOCK_SIZE - 1) / BLOCK_SIZE, MAX_BLOCKS);
+        setup_curand_kernel<<<num_blocks, BLOCK_SIZE, 0, stream>>>(d_rand_state.get());
+        
+        // cuBLAS matrix multiplication constants
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        
+        // Convergence control variables
+        float rel_error = tol + 1.0f;
+        float *d_max_error;
+        CUDA_CHECK(cudaMalloc(&d_max_error, sizeof(float)));
+        
+        // Main iteration loop
+        int iter;
+        for (iter = 0; iter < max_iters && rel_error > tol; iter++) {
+            printf("Iter: %d\n", iter);
+            // Generate batch of random vectors
+            generate_random_vector<<<num_blocks, BLOCK_SIZE, 0, stream>>>(
+                d_rand_state.get(), d_z.get(), n, bs, use_rademacher);
+            
+            // Compute matrix-vector products using cuBLAS
+            CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+                                    n, bs, n,
+                                    &alpha,
+                                    d_matrix.get(), n,
+                                    d_z.get(), n,
+                                    &beta,
+                                    d_Az.get(), n));
+            
+            // Update diagonal estimates
+            compute_diagonal_estimate<<<num_blocks, BLOCK_SIZE, 0, stream>>>(
+                d_Az.get(), d_z.get(), d_diag_sum.get(), d_diag_sumsq.get(), 
+                n, bs, k, iter);
+            
+            // Check convergence every 10 iterations
+            if ((iter + 1) % 10 == 0 && iter > 0) {
+                CUDA_CHECK(cudaMemsetAsync(d_max_error, 0, sizeof(float), stream));
+                compute_relative_error_kernel<<<num_blocks, BLOCK_SIZE, 0, stream>>>(
+                    d_diag_sum.get(), d_diag_sumsq.get(), d_max_error, 
+                    n - abs(k), iter + 1);
+                CUDA_CHECK(cudaMemcpyAsync(&rel_error, d_max_error, sizeof(float),
+                                        cudaMemcpyDeviceToHost, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+            }
+        }
+        
+        // Copy results back to host
+        // CUDA_CHECK(cudaMemcpyAsync(diagonal, d_diag_sum.get(),
+        //                         (n - abs(k)) * sizeof(float), 
+        //                         cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(diagonal, d_diag_sum.get(),
+                        (n - abs(k)) * sizeof(float), 
+                        cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        
+        // Print convergence information
+        std::cout << "Completed after " << iter << " iterations\n";
+        std::cout << "Final relative error: " << rel_error << "\n";
+        
+        // Cleanup
+        CUDA_CHECK(cudaFree(d_max_error));
+        CUDA_CHECK(cudaStreamDestroy(stream));
+        CUBLAS_CHECK(cublasDestroy(handle));
+
+        return diag;
+    }
+
     TORCH_LIBRARY_IMPL(cola_kernels, CUDA, m)
     {
         m.impl("fuse_kernel_1", &fuse_kernel_1_cuda);
         m.impl("fuse_kernel_2", &fuse_kernel_2_cuda);
         m.impl("fuse_kernel_3", &fuse_kernel_3_cuda);
         m.impl("fuse_kernel_4", &fuse_kernel_4_cuda);
+        m.impl("fuse_kernel_5", &fuse_kernel_5_cuda);
     }
 
 }
