@@ -18,7 +18,7 @@ def fuse_kernel_3(a: Tensor) -> Tensor:
 
 def fuse_kernel_4(a: Tensor, max_iters: int = 100) -> Tensor:
     """Performs Arnoldi of A efficiently"""
-    return torch.ops.cola_kernels.fuse_kernel_4.default(a)
+    return torch.ops.cola_kernels.fuse_kernel_4.default(a, max_iters)
 
 def fuse_kernel_5(mat: Tensor, 
                   diag: Tensor,
