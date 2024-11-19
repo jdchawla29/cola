@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-__all__ = ["fuse_kernel_1", "fuse_kernel_2", "fuse_kernel_3", "fuse_kernel_4"]
+__all__ = ["fuse_kernel_1", "fuse_kernel_2", "fuse_kernel_3", "fuse_kernel_4", "fuse_kernel_5"]
 
 
 def fuse_kernel_1(a: Tensor, b: Tensor, c: Tensor) -> Tensor:
@@ -16,9 +16,22 @@ def fuse_kernel_3(a: Tensor) -> Tensor:
     """Performs SVD of A efficiently"""
     return torch.ops.cola_kernels.fuse_kernel_3.default(a)
 
-def fuse_kernel_4(a: Tensor,  mi: int) -> Tensor:
+def fuse_kernel_4(a: Tensor, max_iters: int = 100) -> Tensor:
     """Performs Arnoldi of A efficiently"""
-    return torch.ops.cola_kernels.fuse_kernel_4.default(a, mi)
+    return torch.ops.cola_kernels.fuse_kernel_4.default(a, max_iters)
+
+def fuse_kernel_5(mat: Tensor, 
+                  diag: Tensor,
+                  batch_size: int = 100,
+                  tolerance: float = 3e-2,
+                  max_iter: int = 1000,
+                  diagonal_offset: int = 0,
+                  use_rademacher: bool = False,
+                  ) -> Tensor:
+    """Performs Hutch Diagonal estimation of A efficiently"""
+    return torch.ops.cola_kernels.fuse_kernel_5.default(
+        mat, diag, batch_size, tolerance, max_iter, diagonal_offset, use_rademacher
+        )
 
 @torch.library.register_fake("cola_kernels::fuse_kernel_1")
 def _(a, b, c):
@@ -57,7 +70,6 @@ torch.library.register_autograd(
     "cola_kernels::fuse_kernel_1", _backward, setup_context=_setup_context)
 
 
-
 @torch.library.register_fake("cola_kernels::fuse_kernel_2")
 def _(a):
     torch._check(a.dtype == torch.float)
@@ -70,6 +82,23 @@ def _(a):
     return torch.empty_like(a), torch.empty_like(a), torch.empty_like(a)
 
 @torch.library.register_fake("cola_kernels::fuse_kernel_4")
-def _(a, mi):
+def _(
+    a: Tensor,
+    max_iters: int
+):
     torch._check(a.dtype == torch.float)
     return torch.empty_like(a), torch.empty_like(a)
+
+@torch.library.register_fake("cola_kernels::fuse_kernel_5")
+def _(
+    mat: Tensor, 
+    diag: Tensor,
+    batch_size: int,
+    tolerance: float,
+    max_iterations: int,
+    diagonal_offset: int,
+    use_rademacher: bool
+) -> Tensor:
+    torch._check(mat.dtype == torch.float)
+    torch._check(diag.dtype == torch.float)
+    return torch.empty_like(diag)
