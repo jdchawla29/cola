@@ -544,14 +544,10 @@ namespace cola_kernels
 
         time(&start_t);
 
-        // cuda mem copy
-
-        cudaMemset(new_vector_d, 0, N * sizeof(cuFloatComplex));
-        cudaMemset(new_vector_d_r, 0, N * sizeof(cuFloatComplex));
+        // cuda mem copy and set
+        cudaMemcpy(new_vector_d, new_vector, N * sizeof(cfloat), cudaMemcpyHostToDevice);
         cudaMemset(H_d, 0, max_iters * (max_iters + 1) * sizeof(cuFloatComplex));
         cudaMemset(Q_d, 0, N * (max_iters + 1) * sizeof(cuFloatComplex));
-        cudaMemset(ang_d, 0, N * sizeof(cuFloatComplex));
-        cudaMemset(h_vec_d, 0, (max_iters + 1) * sizeof(cuFloatComplex));
 
         // norm calcuations
         sum_of_squares<<<blocks, 1024>>>(new_vector_d, new_vector_d_r, N);
