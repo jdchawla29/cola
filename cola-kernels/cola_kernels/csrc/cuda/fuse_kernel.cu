@@ -499,7 +499,7 @@ namespace cola_kernels
         }
     }
 
-    std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor &a)
+    std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor &a, torch::Scalar mi)
     {
 
         TORCH_CHECK(a.dtype() == at::kFloat);
@@ -507,7 +507,7 @@ namespace cola_kernels
         at::Tensor a_contig = a.contiguous();
         float *A_d = a_contig.data_ptr<float>();
 
-        int max_iters = 100;
+        int max_iters = mi.to<int>();
         double diff_t;
         int idx = 0;
         float norm, angle;

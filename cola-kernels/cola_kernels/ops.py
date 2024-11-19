@@ -16,9 +16,9 @@ def fuse_kernel_3(a: Tensor) -> Tensor:
     """Performs SVD of A efficiently"""
     return torch.ops.cola_kernels.fuse_kernel_3.default(a)
 
-def fuse_kernel_4(a: Tensor) -> Tensor:
+def fuse_kernel_4(a: Tensor,  mi: int) -> Tensor:
     """Performs Arnoldi of A efficiently"""
-    return torch.ops.cola_kernels.fuse_kernel_4.default(a)
+    return torch.ops.cola_kernels.fuse_kernel_4.default(a, mi)
 
 @torch.library.register_fake("cola_kernels::fuse_kernel_1")
 def _(a, b, c):
@@ -70,6 +70,6 @@ def _(a):
     return torch.empty_like(a), torch.empty_like(a), torch.empty_like(a)
 
 @torch.library.register_fake("cola_kernels::fuse_kernel_4")
-def _(a):
+def _(a, mi):
     torch._check(a.dtype == torch.float)
     return torch.empty_like(a), torch.empty_like(a)
