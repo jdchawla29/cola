@@ -603,8 +603,8 @@ namespace cola_kernels
             idx += 1;
         }
 
-        torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kComplexFloat).cuda();
-        torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kComplexFloat).cuda();
+        torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kFloat).cuda();
+        torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kFloat).cuda();
 
         time(&end_t);
         diff_t = difftime(end_t, start_t);
