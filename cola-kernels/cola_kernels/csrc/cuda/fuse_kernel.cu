@@ -97,8 +97,6 @@ namespace cola_kernels
         int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
         cg::grid_group grid = cg::this_grid();
 
-        grid.sync();
-
         // Compute the elements of the lower inverse matrix
         for (int j = 0; j < N; j++)
         {
