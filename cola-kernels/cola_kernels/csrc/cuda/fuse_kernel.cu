@@ -69,13 +69,14 @@ namespace cola_kernels
             }
             grid.sync();
 
-            for (int j = k + 1 + thread_id; j < N; j += grid.size()) {
-                a[Index(j, k, N)] /= a[Index(k, k, N)];
+            int i = k + 1 + thread_id;
+            if(i < N) {
+                a[Index(i, k, N)] /= a[Index(k, k, N)];
             }
             grid.sync();
 
             // Update the submatrix
-            for (int i = k + 1 + thread_id; i < N; i += grid.size()) {
+            if(i < N) {
                 for (int j = i; j < N; j++) {
                     a[Index(j, i, N)] -= a[Index(i, k, N)] * a[Index(j, k, N)];
                 }
