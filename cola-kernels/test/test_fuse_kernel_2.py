@@ -20,12 +20,28 @@ A = torch.randn(n, n)
 A = torch.matmul(A, A.T) + torch.eye(n) * 1e-3
 A = A.to("cuda")
 
-# A2 = A.detach().clone()
-
 A3 = A.detach().clone()
 
-# Compute results
 R1 = cola_kernels.ops.fuse_kernel_2(A)
+
+# Verify if A @ A_Inv is close to identity
+result = is_identity_product(R1, A3)
+print("Checking if A @ A_Inv = Identity: ", result)
+
+
+# Define matrix A
+# n = 2048
+
+# A = torch.randn(n, n)
+# A = torch.matmul(A, A.T) + torch.eye(n) * 1e-3
+# A = A.to("cuda")
+
+# # A2 = A.detach().clone()
+
+# A3 = A.detach().clone()
+
+# # Compute results
+# R1 = cola_kernels.ops.fuse_kernel_2(A)
 # R1 = R1.to("cpu")
 
 # A_np = A.cpu().numpy()
@@ -62,8 +78,8 @@ R1 = cola_kernels.ops.fuse_kernel_2(A)
 #     print(f"Maximum relative difference: {max_rel_diff}")
 
 # Verify if A @ A_Inv is close to identity
-result = is_identity_product(R1, A3)
-print("Checking if A @ A_Inv = Identity: ", result)
+# result = is_identity_product(R1, A3)
+# print("Checking if A @ A_Inv = Identity: ", result)
 # result = is_identity_product(R2, A3)
 # print("R2: ", result)
 # A = A.to("cpu")

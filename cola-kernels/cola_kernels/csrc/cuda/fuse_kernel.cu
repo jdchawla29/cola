@@ -56,29 +56,25 @@ namespace cola_kernels
         return result;
     }
 
-#define MATIDX(i, j, N) (j * N + i)
+#define Index(i, j, N) (j * N + i)
 
-    __global__ void decompose_cholesky_mm_kernel_device(float *a, int N)
+    __global__ void decompose_cholesky(float *a, int N)
     {
 
-        int thread_id = threadIdx.x + blockIdx.x * blockDim.x; // Global thread index
+        int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
         cg::grid_group grid = cg::this_grid();
 
-        // Loop over k
         for (int k = 0; k < N; k++)
         {
 
-            // Compute diagonal element in the first thread
             if (thread_id == 0)
             {
-                // printf("sqrt: %f\n", a[MATIDX(k, k, N)]);
-                a[MATIDX(k, k, N)] = sqrt(a[MATIDX(k, k, N)]);
+                a[Index(k, k, N)] = sqrt(a[Index(k, k, N)]);
 
                 // Update column elements by dividing by the diagonal
                 for (int j = k + 1; j < N; j++)
                 {
-                    // printf("div: %f %f\n", a[MATIDX(j, k, N)], a[MATIDX(k, k, N)]);
-                    a[MATIDX(j, k, N)] /= a[MATIDX(k, k, N)];
+                    a[Index(j, k, N)] /= a[Index(k, k, N)];
                 }
             }
 
@@ -90,8 +86,7 @@ namespace cola_kernels
             {
                 for (int j = i; j < N; j++)
                 {
-                    // printf("parallel: %f %f %f\n", a[MATIDX(i, j, N)], a[MATIDX(i, k, N)], a[MATIDX(j, k, N)]);
-                    a[MATIDX(j, i, N)] -= a[MATIDX(i, k, N)] * a[MATIDX(j, k, N)];
+                    a[Index(j, i, N)] -= a[Index(i, k, N)] * a[Index(j, k, N)];
                 }
             }
 
@@ -105,7 +100,7 @@ namespace cola_kernels
             {
                 for (int j = 0; j < i; j++)
                 {
-                    a[MATIDX(j, i, N)] = 0;
+                    a[Index(j, i, N)] = 0;
                 }
             }
         }
@@ -113,10 +108,10 @@ namespace cola_kernels
         // int col = thread_id % N;
 
         // if (row < N && col < N && col > row) {
-        //     a[MATIDX(row, col, N)] = 0;
+        //     a[Index(row, col, N)] = 0;
         // }
     }
-    __global__ void inverse_lower_mm_kernel_device(float *a, float *aInv, int N)
+    __global__ void inverse_lower(float *a, float *aInv, int N)
     {
 
         int thread_id = threadIdx.x + blockIdx.x * blockDim.x; // Global thread index
@@ -129,7 +124,7 @@ namespace cola_kernels
             {
                 for (int j = 0; j <= i; j++)
                 {
-                    aInv[MATIDX(i, j, N)] = 0;
+                    aInv[Index(i, j, N)] = 0;
                 }
             }
         }
@@ -139,7 +134,7 @@ namespace cola_kernels
 
         // // Check if the thread corresponds to a lower triangular element (including diagonal)
         // if (i < N && j <= i) {
-        //     aInv[MATIDX(i, j, N)] = 0;
+        //     aInv[Index(i, j, N)] = 0;
         // }
 
         grid.sync();
@@ -152,16 +147,16 @@ namespace cola_kernels
 
                 if (thread_id == 0)
                 {
-                    aInv[MATIDX(i, j, N)] = -a[MATIDX(i, j, N)] /
-                                            (a[MATIDX(j, j, N)] * a[MATIDX(i, i, N)]);
+                    aInv[Index(i, j, N)] = -a[Index(i, j, N)] /
+                                            (a[Index(j, j, N)] * a[Index(i, i, N)]);
                 }
                 grid.sync();
 
                 int k = thread_id + j + 1;
                 if (k < i)
                 {
-                    atomicAdd((float *)&aInv[MATIDX(i, j, N)],
-                              -a[MATIDX(i, k, N)] * aInv[MATIDX(k, j, N)] / a[MATIDX(i, i, N)]);
+                    atomicAdd((float *)&aInv[Index(i, j, N)],
+                              -a[Index(i, k, N)] * aInv[Index(k, j, N)] / a[Index(i, i, N)]);
                 }
             }
         }
@@ -169,26 +164,25 @@ namespace cola_kernels
 
         if (thread_id == 0)
         {
-            // Set the inverse of the diagonal elements and copy results to `aInv`
             for (int i = 0; i < N; i++)
             {
-                aInv[MATIDX(i, i, N)] = 1.0 / a[MATIDX(i, i, N)];
+                aInv[Index(i, i, N)] = 1.0 / a[Index(i, i, N)];
                 for (int j = 0; j <= i; j++)
                 {
-                    // Set only the lower triangular values in `aInv`
-                    aInv[MATIDX(i, j, N)] = aInv[MATIDX(i, j, N)];
+                    // Set only the lower triangular values in aInv
+                    aInv[Index(i, j, N)] = aInv[Index(i, j, N)];
                 }
             }
         }
     }
 
-    __global__ void multiply_lower_mm_kernel_device(float *a, float *aInv, int N)
+    __global__ void multiply_lower(float *a, float *aInv, int N)
     {
 
-        int thread_id = threadIdx.x + blockIdx.x * blockDim.x; // Global thread index
+        int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
         cg::grid_group grid = cg::this_grid();
 
-        // Perform multiplication directly in `aInv`
+        // Perform multiplication directly in aInv
         for (int j = 0; j < N; j++)
         {
             for (int i = j; i < N; i++)
@@ -196,15 +190,15 @@ namespace cola_kernels
 
                 if (thread_id == 0)
                 {
-                    aInv[MATIDX(i, j, N)] *= aInv[MATIDX(i, i, N)];
+                    aInv[Index(i, j, N)] *= aInv[Index(i, i, N)];
                 }
                 grid.sync();
 
                 int k = thread_id + i + 1;
                 if (k < N)
                 {
-                    atomicAdd((float *)&aInv[MATIDX(i, j, N)],
-                              aInv[MATIDX(k, j, N)] * aInv[MATIDX(k, i, N)]);
+                    atomicAdd((float *)&aInv[Index(i, j, N)],
+                              aInv[Index(k, j, N)] * aInv[Index(k, i, N)]);
                 }
             }
         }
@@ -212,12 +206,12 @@ namespace cola_kernels
 
         if (thread_id == 0)
         {
-            // Copy the results into the full lower and symmetric upper triangle of `aInv`
+            // Copy the results into the full lower and symmetric upper triangle of aInv
             for (int i = 0; i < N; i++)
             {
                 for (int j = 0; j <= i; j++)
                 {
-                    aInv[MATIDX(j, i, N)] = aInv[MATIDX(i, j, N)];
+                    aInv[Index(j, i, N)] = aInv[Index(i, j, N)];
                 }
             }
         }
@@ -226,7 +220,7 @@ namespace cola_kernels
 
         // // Ensure the thread is within bounds and in the upper triangular part (j <= i)
         // if (i < N && j <= i) {
-        //     aInv[MATIDX(j, i, N)] = aInv[MATIDX(i, j, N)];
+        //     aInv[Index(j, i, N)] = aInv[Index(i, j, N)];
         // }
     }
 
@@ -240,72 +234,20 @@ namespace cola_kernels
         float *result_ptr = result.data_ptr<float>();
 
         int N = static_cast<int>(a.size(0));
-        // printf("N = %d\n", N);
-        // TEST
-        // at::Tensor a_cpu = a.cpu();
-        // // Ensure it is contiguous on the CPU
-        // at::Tensor a_contig_cpu = a_cpu.contiguous();
-        // float* a_ptr_cpu = a_contig_cpu.data_ptr<float>();
-        // for (int i = 0; i < 3; ++i) {
-        //     for (int j = 0; j < 3; ++j) {
-        //         float value = a_ptr_cpu[i * 3 + j];
-        //         printf("A[%d, %d] = %f\n", i, j, value);
-        //     }
-        // }
-        // OVER
 
-        // decompose_cholesky_mm_kernel_device<<< 1, N>>>(a_ptr, N);
-
-        // cudaDeviceSynchronize();
-        // Kernel launch configuration for cooperative kernel
-        dim3 blockSize(256);                                // Number of threads per block
-        dim3 gridSize((N + blockSize.x - 1) / blockSize.x); // Number of blocks
+        dim3 blockSize(256);                                
+        dim3 gridSize((N + blockSize.x - 1) / blockSize.x); 
         // Kernel launch with cooperative groups
         void *args1[] = {&a_ptr, &N};
-        cudaLaunchCooperativeKernel((void *)decompose_cholesky_mm_kernel_device, gridSize, blockSize, args1, 0, 0);
+        cudaLaunchCooperativeKernel((void *)decompose_cholesky, gridSize, blockSize, args1, 0, 0);
         cudaDeviceSynchronize();
 
-        // printf("AFTER decompose\n");
-        // a_cpu = a.cpu();
-        // // Ensure it is contiguous on the CPU
-        // a_contig_cpu = a_cpu.contiguous();
-        // a_ptr_cpu = a_contig_cpu.data_ptr<float>();
-        // for (int i = 0; i < 3; ++i) {
-        //     for (int j = 0; j < 3; ++j) {
-        //         float value = a_ptr_cpu[i * 3 + j];
-        //         printf("A[%d, %d] = %f\n", i, j, value);
-        //     }
-        // }
-        // inverse_lower_mm_kernel_device<<< 1, N>>>(a_ptr, result_ptr, N);
-        // Kernel launch with cooperative groups
         void *args2[] = {&a_ptr, &result_ptr, &N};
-        cudaLaunchCooperativeKernel((void *)inverse_lower_mm_kernel_device, gridSize, blockSize, args2, 0, 0);
+        cudaLaunchCooperativeKernel((void *)inverse_lower, gridSize, blockSize, args2, 0, 0);
         cudaDeviceSynchronize();
-        // printf("AFTER inverse\n");
-        // a_cpu = a.cpu();
-        // // Ensure it is contiguous on the CPU
-        // a_contig_cpu = a_cpu.contiguous();
-        // a_ptr_cpu = a_contig_cpu.data_ptr<float>();
-        // for (int i = 0; i < 3; ++i) {
-        //     for (int j = 0; j < 3; ++j) {
-        //         float value = a_ptr_cpu[i * 3 + j];
-        //         printf("A[%d, %d] = %f\n", i, j, value);
-        //     }
-        // }
-        // multiply_lower_mm_kernel_device<<< 1, N>>>(a_ptr, result_ptr, N);
-        cudaLaunchCooperativeKernel((void *)multiply_lower_mm_kernel_device, gridSize, blockSize, args2, 0, 0);
+
+        cudaLaunchCooperativeKernel((void *)multiply_lower, gridSize, blockSize, args2, 0, 0);
         cudaDeviceSynchronize();
-        // printf("AFTER multiply\n");
-        // a_cpu = a.cpu();
-        // // Ensure it is contiguous on the CPU
-        // a_contig_cpu = a_cpu.contiguous();
-        // a_ptr_cpu = a_contig_cpu.data_ptr<float>();
-        // for (int i = 0; i < 3; ++i) {
-        //     for (int j = 0; j < 3; ++j) {
-        //         float value = a_ptr_cpu[i * 3 + j];
-        //         printf("A[%d, %d] = %f\n", i, j, value);
-        //     }
-        // }
 
         return result;
     }
@@ -322,19 +264,18 @@ namespace cola_kernels
 
     std::tuple<at::Tensor, at::Tensor, at::Tensor> fuse_kernel_3_cuda(at::Tensor &a)
     {
-        // Ensure input tensor is float and CUDA-based
+
         TORCH_CHECK(a.dtype() == at::kFloat);
         TORCH_INTERNAL_ASSERT(a.device().type() == at::DeviceType::CUDA);
 
-        // Make tensor contiguous and get sizes
         at::Tensor a_contig = a.contiguous();
-        int m = a_contig.size(0); // Rows
-        int n = a_contig.size(1); // Columns
+        int m = a_contig.size(0);
+        int n = a_contig.size(1);
         int lda = m;
 
         float *a_ptr = a_contig.data_ptr<float>();
 
-        // Allocate output tensors
+
         at::Tensor u = torch::empty({m, m}, a_contig.options());
         at::Tensor s = torch::empty({std::min(m, n)}, a_contig.options());
         at::Tensor vt = torch::empty({n, n}, a_contig.options());
@@ -357,6 +298,7 @@ namespace cola_kernels
         cublasSgemm(cublasH, CUBLAS_OP_N, CUBLAS_OP_T, m, m, n, &alpha, a_ptr, lda, a_ptr, lda, &beta, aat_ptr, m);
         cublasSgemm(cublasH, CUBLAS_OP_T, CUBLAS_OP_N, n, n, m, &alpha, a_ptr, lda, a_ptr, lda, &beta, ata_ptr, n);
 
+        // U (using A A^T)
         at::Tensor u_eigenvalues = torch::empty({m}, a_contig.options());
         float *u_eigenvalues_ptr = u_eigenvalues.data_ptr<float>();
         int u_lwork = 0;
@@ -370,10 +312,8 @@ namespace cola_kernels
         cusolverDnSsyevd(cusolverH, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER,
                          m, aat_ptr, m, u_eigenvalues_ptr, u_work, u_lwork, devInfo);
 
-        // Normalize and sort U's eigenvectors and eigenvalues
-        // normalize_and_sort_eigen(aat_ptr, u_eigenvalues_ptr, m, true);
 
-        // Repeat for V (using A^T A)
+        // V (using A^T A)
         at::Tensor v_eigenvalues = torch::empty({n}, a_contig.options());
         float *v_eigenvalues_ptr = v_eigenvalues.data_ptr<float>();
         int v_lwork = 0;
@@ -385,16 +325,13 @@ namespace cola_kernels
         cusolverDnSsyevd(cusolverH, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER,
                          n, ata_ptr, n, v_eigenvalues_ptr, v_work, v_lwork, devInfo);
 
-        // normalize_and_sort_eigen(ata_ptr, v_eigenvalues_ptr, n, false);
 
-        // Step 3: Form Sigma
+        // Sigma
         int size = std::min(m, n);
         int blockSize = 256;
         int gridSize = (size + blockSize - 1) / blockSize;
         computeSquareRoot<<<gridSize, blockSize>>>(s_ptr, u_eigenvalues_ptr, size);
 
-        // cudaMemcpy(u_ptr, aat_ptr, m * m * sizeof(float), cudaMemcpyDeviceToDevice);
-        // cudaMemcpy(vt_ptr, ata_ptr, n * n * sizeof(float), cudaMemcpyDeviceToDevice);
 
         // Cleanup
         cudaFree(u_work);
