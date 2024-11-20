@@ -544,6 +544,12 @@ namespace cola_kernels
         torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kFloat).to(torch::Device(torch::kCUDA, 1));
         torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kFloat).to(torch::Device(torch::kCUDA, 1));
 
+        cudaFree(new_vector_d);
+        cudaFree(new_vector_d_r);
+        cudaFree(H_d);
+        cudaFree(Q_d);
+        cudaFree(h_vec_d);
+        cudaFree(ang_d);
         return std::make_tuple(rH, rQ);
     }
 
