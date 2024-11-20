@@ -58,84 +58,43 @@ namespace cola_kernels
 
 #define Index(i, j, N) (j * N + i)
 
-    __global__ void decompose_cholesky(float *a, int N)
+
+    __global__ void decompose_cholesky(float *a, int N) {
+        int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+        cg::grid_group grid = cg::this_grid();
+
+        for (int k = 0; k < N; k++) {
+            if (thread_id == 0) {
+                a[Index(k, k, N)] = sqrt(a[Index(k, k, N)]);
+            }
+            grid.sync();
+
+            for (int j = k + 1 + thread_id; j < N; j += grid.size()) {
+                a[Index(j, k, N)] /= a[Index(k, k, N)];
+            }
+            grid.sync();
+
+            // Update the submatrix
+            for (int i = k + 1 + thread_id; i < N; i += grid.size()) {
+                for (int j = i; j < N; j++) {
+                    a[Index(j, i, N)] -= a[Index(i, k, N)] * a[Index(j, k, N)];
+                }
+            }
+            grid.sync();
+        }
+
+        if (thread_id < N) {
+            for (int j = thread_id + 1; j < N; j++) {
+                a[Index(thread_id, j, N)] = 0.0f;
+            }
+        }
+    }
+
+    __global__ void inverse_lower(float *a, float *aInv, int N)
     {
 
         int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
         cg::grid_group grid = cg::this_grid();
-
-        for (int k = 0; k < N; k++)
-        {
-
-            if (thread_id == 0)
-            {
-                a[Index(k, k, N)] = sqrt(a[Index(k, k, N)]);
-
-                // Update column elements by dividing by the diagonal
-                for (int j = k + 1; j < N; j++)
-                {
-                    a[Index(j, k, N)] /= a[Index(k, k, N)];
-                }
-            }
-
-            grid.sync(); // Synchronize threads after updating the diagonal
-
-            // Update the rest of the matrix, only threads that handle i > k
-            int i = thread_id + k + 1; // Global row index
-            if (i < N)
-            {
-                for (int j = i; j < N; j++)
-                {
-                    a[Index(j, i, N)] -= a[Index(i, k, N)] * a[Index(j, k, N)];
-                }
-            }
-
-            grid.sync(); // Synchronize threads after updating the matrix
-        }
-
-        // Zero out the upper triangular part of the matrix after decomposition (only for thread 0)
-        if (thread_id == 0)
-        {
-            for (int i = 0; i < N; i++)
-            {
-                for (int j = 0; j < i; j++)
-                {
-                    a[Index(j, i, N)] = 0;
-                }
-            }
-        }
-        // int row = thread_id / N;
-        // int col = thread_id % N;
-
-        // if (row < N && col < N && col > row) {
-        //     a[Index(row, col, N)] = 0;
-        // }
-    }
-    __global__ void inverse_lower(float *a, float *aInv, int N)
-    {
-
-        int thread_id = threadIdx.x + blockIdx.x * blockDim.x; // Global thread index
-        cg::grid_group grid = cg::this_grid();
-
-        if (threadIdx.x == 0)
-        {
-            // Initialize `aInv` to zero
-            for (int i = 0; i < N; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    aInv[Index(i, j, N)] = 0;
-                }
-            }
-        }
-
-        // int i = thread_id / N; // Row index
-        // int j = thread_id % N; // Column index
-
-        // // Check if the thread corresponds to a lower triangular element (including diagonal)
-        // if (i < N && j <= i) {
-        //     aInv[Index(i, j, N)] = 0;
-        // }
 
         grid.sync();
 
@@ -162,17 +121,8 @@ namespace cola_kernels
         }
         grid.sync();
 
-        if (thread_id == 0)
-        {
-            for (int i = 0; i < N; i++)
-            {
-                aInv[Index(i, i, N)] = 1.0 / a[Index(i, i, N)];
-                for (int j = 0; j <= i; j++)
-                {
-                    // Set only the lower triangular values in aInv
-                    aInv[Index(i, j, N)] = aInv[Index(i, j, N)];
-                }
-            }
+        if (thread_id < N) {
+            aInv[Index(thread_id, thread_id, N)] = 1.0 / a[Index(thread_id, thread_id, N)];
         }
     }
 
@@ -204,24 +154,12 @@ namespace cola_kernels
         }
         grid.sync();
 
-        if (thread_id == 0)
-        {
-            // Copy the results into the full lower and symmetric upper triangle of aInv
-            for (int i = 0; i < N; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    aInv[Index(j, i, N)] = aInv[Index(i, j, N)];
-                }
+
+        if (thread_id < N) {
+            for (int j = 0; j <= thread_id; j++) {
+                aInv[Index(j, thread_id, N)] = aInv[Index(thread_id, j, N)];
             }
         }
-        // int i = thread_id / N; // Row index
-        // int j = thread_id % N; // Column index
-
-        // // Ensure the thread is within bounds and in the upper triangular part (j <= i)
-        // if (i < N && j <= i) {
-        //     aInv[Index(j, i, N)] = aInv[Index(i, j, N)];
-        // }
     }
 
     at::Tensor fuse_kernel_2_cuda(at::Tensor &a)
@@ -229,7 +167,7 @@ namespace cola_kernels
         TORCH_CHECK(a.dtype() == at::kFloat);
         TORCH_INTERNAL_ASSERT(a.device().type() == at::DeviceType::CUDA);
         at::Tensor a_contig = a.contiguous();
-        at::Tensor result = torch::empty(a_contig.sizes(), a_contig.options());
+        at::Tensor result = torch::zeros(a_contig.sizes(), a_contig.options());
         float *a_ptr = a_contig.data_ptr<float>();
         float *result_ptr = result.data_ptr<float>();
 
@@ -251,6 +189,7 @@ namespace cola_kernels
 
         return result;
     }
+
 
     __global__ void computeSquareRoot(float *s_ptr, const float *eigenvalues_ptr, int size)
     {
