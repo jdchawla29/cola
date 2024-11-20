@@ -801,7 +801,7 @@ __global__ void compute_relative_error_kernel(
         struct CudaDeleter {
             void operator()(void* p) { cudaFree(p); }
         };
-        printf("CUDAstream created\n");
+        // printf("CUDAstream created\n");
         // Smart pointers for CUDA memory management
         std::unique_ptr<float, CudaDeleter> d_matrix;      // Device matrix
         std::unique_ptr<float, CudaDeleter> d_z;           // Random vectors
@@ -854,7 +854,7 @@ __global__ void compute_relative_error_kernel(
         // Main iteration loop
         int iter;
         for (iter = 0; iter < max_iters && rel_error > tol; iter++) {
-            printf("Iter: %d\n", iter);
+            // printf("Iter: %d\n", iter);
             // Generate batch of random vectors
             generate_random_vector<<<num_blocks, BLOCK_SIZE, 0, stream>>>(
                 d_rand_state.get(), d_z.get(), n, bs, use_rademacher);
@@ -895,8 +895,8 @@ __global__ void compute_relative_error_kernel(
         CUDA_CHECK(cudaStreamSynchronize(stream));
         
         // Print convergence information
-        std::cout << "Completed after " << iter << " iterations\n";
-        std::cout << "Final relative error: " << rel_error << "\n";
+        // std::cout << "Completed after " << iter << " iterations\n";
+        // std::cout << "Final relative error: " << rel_error << "\n";
         
         // Cleanup
         CUDA_CHECK(cudaFree(d_max_error));
