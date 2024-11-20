@@ -400,17 +400,17 @@ namespace cola_kernels
         }
     }
 
-    __global__ void update_arr(float *Q, float *V, int N, int M, int i)
+    __global__ void update_arr(float *Q, float *V, int N, int i)
     {
         int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
         if (row_idx < N)
         {
-            Q[index(row_idx, i, M)] = V[row_idx];
+            Q[index(i, row_idx, N)] = V[row_idx];
         }
     }
 
-    __global__ void matrix_vector_mul(float *A, float *B, float *C, int N, int M, int i)
+    __global__ void matrix_vector_mul(float *A, float *B, float *C, int N, int i)
     {
         int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (row_idx < N)
@@ -418,28 +418,28 @@ namespace cola_kernels
             float dot_product = 0.0;
             for (int col_idx = 0; col_idx < N; col_idx++)
             {
-                dot_product += A[index(row_idx, col_idx, N)] * B[index(col_idx, i, M)];
+                dot_product += A[index(row_idx, col_idx, N)] * B[index(i, col_idx, N)];
             }
             C[row_idx] = dot_product;
         }
     }
 
-    __global__ void update_new_vector(float A, float *B, float *C, int N, int M, int i)
+    __global__ void update_new_vector(float A, float *B, float *C, int N, int i)
     {
         int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
         if (row_idx < N)
         {
-            C[row_idx] -= A * B[index(row_idx, i, M)];
+            C[row_idx] -= A * B[index(i,row_idx, N)];
         }
     }
 
-    __global__ void angle_cal(float *Q, float *V, float *ang, int N, int M, int i)
+    __global__ void angle_cal(float *Q, float *V, float *ang, int N, int i)
     {
         int row_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (row_idx < N)
         {
-            ang[row_idx] = Q[index(row_idx, i, M)] * V[row_idx];
+            ang[row_idx] = Q[index(i, row_idx, N)] * V[row_idx];
         }
     }
 
@@ -497,19 +497,19 @@ namespace cola_kernels
         norm_cal<<<blocks, 1024>>>(new_vector_d, norm, N);
 
         // update Q
-        update_arr<<<blocks, 1024>>>(Q_d, new_vector_d, N, (max_iters + 1), 0);
+        update_arr<<<blocks, 1024>>>(Q_d, new_vector_d, N, 0);
 
         // iterations
         while (idx < max_iters && norm > tol * limit)
         {
-            matrix_vector_mul<<<blocks, 1024>>>(A_d, Q_d, new_vector_d, N, (max_iters + 1), idx);
+            matrix_vector_mul<<<blocks, 1024>>>(A_d, Q_d, new_vector_d, N, idx);
             cudaMemset(h_vec_d, 0, (max_iters + 1) * sizeof(float));
             for (int j = 0; j < idx + 1; j++)
             {
                 cudaMemset(ang_d, 0, N * sizeof(float));
                 cudaMemset(new_vector_d_r, 0, blocks * sizeof(float));
                 memset(new_vector_r, 0, blocks * sizeof(float));
-                angle_cal<<<blocks, 1024>>>(Q_d, new_vector_d, ang_d, N, (max_iters + 1), j);
+                angle_cal<<<blocks, 1024>>>(Q_d, new_vector_d, ang_d, N, j);
                 sum<<<blocks, 1024>>>(ang_d, new_vector_d_r, N);
                 cudaMemcpy(new_vector_r, new_vector_d_r, blocks * sizeof(float), cudaMemcpyDeviceToHost);
                 angle = 0;
@@ -518,7 +518,7 @@ namespace cola_kernels
                     angle = angle + new_vector_r[i];
                 }
                 cudaMemcpy(&h_vec_d[j], &angle, sizeof(float), cudaMemcpyHostToDevice);
-                update_new_vector<<<blocks, 1024>>>(angle, Q_d, new_vector_d, N, (max_iters + 1), j);
+                update_new_vector<<<blocks, 1024>>>(angle, Q_d, new_vector_d, N, j);
             }
             cudaMemset(new_vector_d_r, 0, blocks * sizeof(float));
             memset(new_vector_r, 0, blocks * sizeof(float));
@@ -536,14 +536,13 @@ namespace cola_kernels
             }
             norm_cal<<<blocks, 1024>>>(new_vector_d, norm, N);
             cudaMemcpy(&h_vec_d[idx + 1], &norm, sizeof(float), cudaMemcpyHostToDevice);
-            update_arr<<<((max_iters + 1) + 1023) / 1024, 1024>>>(H_d, h_vec_d, (max_iters + 1), max_iters, idx);
-            update_arr<<<blocks, 1024>>>(Q_d, new_vector_d, N, (max_iters + 1), (idx + 1));
+            update_arr<<<((max_iters + 1) + 1023) / 1024, 1024>>>(H_d, h_vec_d, (max_iters + 1), idx);
+            update_arr<<<blocks, 1024>>>(Q_d, new_vector_d, N, (idx + 1));
             cudaMemcpy(&limit, &H_d[index(0, 0, max_iters)], sizeof(float), cudaMemcpyDeviceToHost);
             idx += 1;
         }
-
-        torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kFloat).cuda();
-        torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kFloat).cuda();
+        torch::Tensor rH = torch::from_blob(H_d, {(max_iters + 1) * max_iters}, torch::kFloat).to(torch::Device(torch::kCUDA, 1));
+        torch::Tensor rQ = torch::from_blob(Q_d, {N * (max_iters + 1)}, torch::kFloat).to(torch::Device(torch::kCUDA, 1));
 
         return std::make_tuple(rH, rQ);
     }
