@@ -381,6 +381,10 @@ namespace cola_kernels
         }
     }
 
+    // Constants for CUDA kernel configuration
+    constexpr int BLOCK_SIZE = 256;     // Number of threads per block
+    constexpr int MAX_BLOCKS = 65535;   // Maximum number of blocks
+
     std::tuple<at::Tensor, at::Tensor> fuse_kernel_4_cuda(at::Tensor &a, int64_t max_iters=100)
     {
 
@@ -512,10 +516,6 @@ namespace cola_kernels
             throw std::runtime_error("cuBLAS error"); \
         } \
     } while (0)
-
-// Constants for CUDA kernel configuration
-constexpr int BLOCK_SIZE = 256;     // Number of threads per block
-constexpr int MAX_BLOCKS = 65535;   // Maximum number of blocks
 
 // Initialize CUDA random number generator states
 __global__ void setup_curand_kernel(curandState *state) {

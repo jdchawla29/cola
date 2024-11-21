@@ -16,8 +16,11 @@ We have fours folders,
 
 Installation steps
 
-1. 
-2. 
+1. Our work has been done on CUDA-3. So it is suggested to do tests on CUDA 3.
+2. bash install.sh
+3. source /scratch/cola-env/bin/activate
+
+And then you can run any tests, benchmarks and playground code.
 
 
 
