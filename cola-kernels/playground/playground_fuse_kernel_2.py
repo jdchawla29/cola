@@ -1,8 +1,8 @@
 """
 
 This file is computes the inverse of a matrix using Cholesky algorithm
-implemented in CoLA kernels. The code was testing in cuda3 machine and the max size 
-is Rahul for N. Beyond this we ran into CUDA out of memory issues
+implemented in CoLA kernels. The code was testing in cuda3 machine and the max size N 4096. 
+Beyond this it is very slow.
 
 
 """
