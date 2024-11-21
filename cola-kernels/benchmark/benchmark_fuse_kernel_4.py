@@ -1,6 +1,9 @@
 import torch
 from datetime import datetime
 from torch.profiler import profiler
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
 import cola_kernels
 import cola
@@ -64,8 +67,7 @@ def diff(a, b, tol=1e-03):
     sorted_tensor2, _ = torch.sort(torch.abs(b))
     min_length = min(len(sorted_tensor1), len(sorted_tensor2))
     diff = sorted_tensor1 - sorted_tensor2
-    threshold = 1e-03
-    count_greater = torch.sum(torch.abs(diff) > threshold).item()
+    count_greater = torch.sum(torch.abs(diff) > tol).item()
     return count_greater
 
 
@@ -81,8 +83,7 @@ def compare(torch_e, e_cola, e, e_cola_cpu, torch_v, ev_cola, ev, ev_cola_cpu):
     print("eigen vector different between torch and cola cpu: " + str(diff(torch_v, ev_cola_cpu)))
 
 
-# , (2000, 2000), (5000, 5000), (10000, 1000), (20000, 2000), (50000, 2000)
-configs = [(100, 100), (500, 500), (1000, 1000)]
+configs = [(100, 100), (500, 500), (1000, 1000), (2000, 2000), (5000, 5000), (10000, 1000), (20000, 2000)]
 
 pytorch_time = []
 cola_python_gpu_time = []
@@ -101,7 +102,6 @@ def run():
         e_cola_cpu, ev_cola_cpu, t_cola_cpu = eigen_cola_cpu(A_cpu, iters)
 
         print(f"n: {n}, pytorch:{t_torch} sec, cola:{t_cola} sec, cola-kernel:{t} sec, cola-cpu:{t_cola_cpu} sec")
-        #print(f"n: {n}, pytorch:{t_torch} sec, cola-kernel:{t} sec")
 
         if n == 100 or n == 500 or n == 1000:
             compare(torch_e, e_cola, e, e_cola_cpu, torch_v, ev_cola, ev, ev_cola_cpu)
@@ -115,46 +115,41 @@ def run():
         print("cola kernel: ", cola_kernel_time)
         print("cola cpu: ",cola_python_cpu_time)
 
+run()
+  
 def draw_graphs():
     df = pd.DataFrame({
         'Configurations': [f"{n, i}" for (n, i) in configs],
         'pytorch': np.array(pytorch_time),
-        'cola python': np.array(cola_python_gpu_time),
-        'cola cuda': np.array(cola_kernel_time),
+        'cola cuda': np.array(cola_python_gpu_time),
+        'cola kernel': np.array(cola_kernel_time),
         'cola cpu': np.array(cola_python_cpu_time),
     })
-    ax = df.plot(x='Configurations', y=['cola python', 'cola kernels'], kind='bar')
-    for container in ax.containers:
-        ax.bar_label(container, fmt='%.2f')
+    ax = df.plot(x='Configurations', y=['pytorch', 'cola cuda', 'cola kernel', 'cola cpu'], kind='bar', logy=True)
+    # for container in ax.containers:
+    #     ax.bar_label(container, fmt='%.2f')
     plt.xlabel('size(n, iternations)')
     plt.ylabel('Time in seconds (log scale)')
-    plt.title(f'Eigen value calculations using Arnoldi algorithm:{iters}')
+    plt.title(f'Eigen value calculations using Arnoldi algorithm')
     plt.xticks(rotation=45)
-    logy=True,
     plt.legend()
     plt.tight_layout()
-    plt.savefig("speedup.png")
+    plt.savefig("cola-kernels/benchmark/speed.png")
 
     df = pd.DataFrame({
         'Configurations': [f"{n, i}" for (n, i) in configs],
-        'cola python vs cpu': np.array(cola_python_cpu_time)/np.array(cola_python_gpu_time),
-        'cola cuda vs cpu': np.array(cola_python_cpu_time)/np.array(cola_kernel_time),
-        'cola python vs cola cuda': np.array(cola_python_gpu_time)/np.array(cola_kernel_time),
+        'cola cpu/cola kernel': np.array(cola_python_cpu_time) / np.array(cola_kernel_time),
+        'cola cuda/cola kernel': np.array(cola_python_gpu_time) / np.array(cola_kernel_time),
     })
-    ax = df.plot(x='Configurations', y=['cola python vs cpu', 'cola cuda vs cpu', 'cola python vs cola cuda'], kind='bar')
-    for container in ax.containers:
-        ax.bar_label(container, fmt='%.2f')
+    ax = df.plot(x='Configurations', y=['cola cpu/cola kernel', 'cola cuda/cola kernel'], kind='bar')
     plt.xlabel('size(n, iternations)')
     plt.ylabel('Speedup')
-    plt.title(f'Eigen value calculations using Arnoldi algorithm:{iters}')
+    plt.title(f'Eigen value calculations using Arnoldi algorithm')
     plt.xticks(rotation=45)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("speedup.png")
+    plt.savefig("cola-kernels/benchmark/speedup.png")
 
-
-run()
-  
 # # with profiler.profile(
 # #     activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
 # #     record_shapes=True,

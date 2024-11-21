@@ -396,7 +396,7 @@ namespace cola_kernels
         srand(21);
         int random_number = rand();
         int N = a.sizes()[0];
-        int blocks = (N + 1023) / 1024;
+        int blocks = std::min((N + 1023) / 1024, MAX_BLOCKS);
         float tol = 0.0000001;
         float limit = 1;
 
